@@ -39,17 +39,17 @@ SHORTCUTS = [
     ("Ctrl+O", "이미지 로드"),
     ("P", "Hand / Point 모드 전환"),
     ("Ctrl+R", "모든 포인트 리셋"),
-    ("Ctrl+Shift+R", "Fit View (원본 비율)"),
     ("Ctrl+/", "단축키 가이드"),
+    ("F", "Fit View (원본 비율)"),
     ("마우스 휠", "줌 인/아웃"),
     ("우클릭", "최근 포인트 취소 (Undo)"),
-    ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
     ("드래그 앤 드롭", "이미지 파일 로드"),
     ("__section__", "Hand Mode"),
     ("좌클릭 드래그", "패닝 (이미지 이동)"),
     ("더블클릭", "Fit View (원본 비율)"),
     ("__section__", "Point Mode"),
     ("좌클릭", "포인트 마킹"),
+    ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
 ]
 
 
@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         # Load Image
         load_action = QAction("Load Image", self)
         load_action.setShortcut(QKeySequence("Ctrl+O"))
+        load_action.setToolTip("이미지 파일 로드 (Ctrl+O)")
         load_action.triggered.connect(self._on_load_image)
         toolbar.addAction(load_action)
 
@@ -205,6 +206,7 @@ class MainWindow(QMainWindow):
         self._point_action = QAction("Point Mode", self)
         self._point_action.setCheckable(True)
         self._point_action.setShortcut(QKeySequence("P"))
+        self._point_action.setToolTip("Hand / Point 모드 전환 (P)")
         self._point_action.triggered.connect(self._on_toggle_mode)
         toolbar.addAction(self._point_action)
 
@@ -213,12 +215,14 @@ class MainWindow(QMainWindow):
         # All Points Reset
         point_reset_action = QAction("All Points Reset", self)
         point_reset_action.setShortcut(QKeySequence("Ctrl+R"))
+        point_reset_action.setToolTip("모든 포인트 제거 (Ctrl+R)")
         point_reset_action.triggered.connect(self._on_point_reset)
         toolbar.addAction(point_reset_action)
 
-        # Fit View (기존 Image Reset → 이미지 비율 원본으로 리셋)
+        # Fit View
         fit_action = QAction("Fit View", self)
-        fit_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        fit_action.setShortcut(QKeySequence("F"))
+        fit_action.setToolTip("이미지 원본 비율로 맞추기 (F)")
         fit_action.triggered.connect(self._on_fit_view)
         toolbar.addAction(fit_action)
 
@@ -246,6 +250,7 @@ class MainWindow(QMainWindow):
         # Shortcut Guide
         shortcut_action = QAction("Shortcuts", self)
         shortcut_action.setShortcut(QKeySequence("Ctrl+/"))
+        shortcut_action.setToolTip("단축키 가이드 (Ctrl+/)")
         shortcut_action.triggered.connect(self._on_show_shortcuts)
         toolbar.addAction(shortcut_action)
 
