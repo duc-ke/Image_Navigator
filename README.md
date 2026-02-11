@@ -2,7 +2,7 @@
 
 비전 프로젝트 개발 보조 도구 — 이미지 좌표 확인 및 포인트 마킹 데스크탑 앱
 
-![Image Navigator](sample/image.png)
+<img src="sample/Image_Navigator.png" width="700">
 
 ## About
 
