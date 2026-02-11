@@ -33,18 +33,23 @@ from PySide6.QtGui import QAction, QFont, QKeySequence
 from canvas import ImageCanvas, Mode
 
 
+# (key, desc) 또는 ("__section__", title) 형태
 SHORTCUTS = [
+    ("__section__", "General"),
     ("Ctrl+O", "이미지 로드"),
     ("P", "Hand / Point 모드 전환"),
     ("Ctrl+R", "모든 포인트 리셋"),
     ("Ctrl+Shift+R", "Fit View (원본 비율)"),
     ("Ctrl+/", "단축키 가이드"),
-    ("좌클릭 (Hand)", "패닝 (이미지 이동)"),
-    ("좌클릭 (Point)", "포인트 마킹"),
-    ("우클릭", "최근 포인트 취소 (Undo)"),
-    ("더블클릭 (Hand)", "Fit View (원본 비율)"),
     ("마우스 휠", "줌 인/아웃"),
+    ("우클릭", "최근 포인트 취소 (Undo)"),
+    ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
     ("드래그 앤 드롭", "이미지 파일 로드"),
+    ("__section__", "Hand Mode"),
+    ("좌클릭 드래그", "패닝 (이미지 이동)"),
+    ("더블클릭", "Fit View (원본 비율)"),
+    ("__section__", "Point Mode"),
+    ("좌클릭", "포인트 마킹"),
 ]
 
 
@@ -84,7 +89,8 @@ class ShortcutDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        table = QTableWidget(len(SHORTCUTS), 2)
+        row_count = len(SHORTCUTS)
+        table = QTableWidget(row_count, 2)
         table.setHorizontalHeaderLabels(["Shortcut", "Action"])
         table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents
@@ -97,11 +103,27 @@ class ShortcutDialog(QDialog):
         table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
+        section_font = QFont("Sans", 12, QFont.Weight.Bold)
+        section_bg = QColor(60, 60, 60)
+
         for row, (key, desc) in enumerate(SHORTCUTS):
-            key_item = QTableWidgetItem(key)
-            key_item.setFont(QFont("Monospace", 13))
-            table.setItem(row, 0, key_item)
-            table.setItem(row, 1, QTableWidgetItem(desc))
+            if key == "__section__":
+                # 섹션 헤더 행
+                item = QTableWidgetItem(desc)
+                item.setFont(section_font)
+                item.setForeground(QColor(180, 200, 255))
+                item.setBackground(section_bg)
+                table.setItem(row, 0, item)
+                # 두 번째 열도 같은 배경
+                empty = QTableWidgetItem("")
+                empty.setBackground(section_bg)
+                table.setItem(row, 1, empty)
+                table.setSpan(row, 0, 1, 2)
+            else:
+                key_item = QTableWidgetItem(key)
+                key_item.setFont(QFont("Monospace", 13))
+                table.setItem(row, 0, key_item)
+                table.setItem(row, 1, QTableWidgetItem(desc))
 
         layout.addWidget(table)
 

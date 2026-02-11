@@ -53,17 +53,24 @@ class Mode(Enum):
 
 
 def _make_point_cursor() -> QCursor:
-    """빨간 점 모양의 커스텀 커서 생성."""
-    size = 20
+    """빨간 십자선 커서 생성."""
+    size = 24
     pm = QPixmap(size, size)
     pm.fill(QColor(0, 0, 0, 0))
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QPen(QColor(255, 50, 50), 2))
-    painter.setBrush(QBrush(QColor(255, 50, 50, 180)))
-    r = 5
+    pen = QPen(QColor(255, 50, 50, 200), 1.2)
+    painter.setPen(pen)
     center = size // 2
-    painter.drawEllipse(center - r, center - r, r * 2, r * 2)
+    arm = 8
+    # 십자선
+    painter.drawLine(center - arm, center, center - 2, center)
+    painter.drawLine(center + 2, center, center + arm, center)
+    painter.drawLine(center, center - arm, center, center - 2)
+    painter.drawLine(center, center + 2, center, center + arm)
+    # 중심 점
+    painter.setPen(QPen(QColor(255, 50, 50, 220), 1.5))
+    painter.drawPoint(center, center)
     painter.end()
     return QCursor(pm, center, center)
 
@@ -454,6 +461,16 @@ class ImageCanvas(QGraphicsView):
             self.undo_last_point()
             return
 
+        # Ctrl+좌클릭 또는 중간 버튼 → 패닝 (양쪽 모드 공통)
+        if event.button() == Qt.MouseButton.MiddleButton or (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            self._is_panning = True
+            self._pan_start = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
         # ── Point 모드 ──
         if self._mode == Mode.POINT:
             if event.button() == Qt.MouseButton.LeftButton:
@@ -470,7 +487,7 @@ class ImageCanvas(QGraphicsView):
             return
 
         # ── Hand 모드 ──
-        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+        if event.button() == Qt.MouseButton.LeftButton:
             self._is_panning = True
             self._pan_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
