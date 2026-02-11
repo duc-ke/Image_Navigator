@@ -2,9 +2,11 @@
 ImageCanvas - QGraphicsView 기반 이미지 캔버스 위젯.
 
 기능:
-- 이미지 로드 및 표시
+- 이미지 로드 및 표시 (파일 선택 / 드래그 앤 드롭)
 - 실시간 마우스 좌표 표시 (커서 옆 오버레이)
+- 십자선 가이드
 - 클릭으로 포인트 마킹 (빨간 점 + 좌표 텍스트)
+- 우클릭으로 최근 포인트 하나씩 취소
 - 마우스 휠 줌 인/아웃
 - 더블클릭 원본 크기 복원
 """
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsTextItem,
     QGraphicsRectItem,
+    QGraphicsLineItem,
 )
 from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import (
@@ -26,6 +29,8 @@ from PySide6.QtGui import (
     QFont,
     QWheelEvent,
     QMouseEvent,
+    QDragEnterEvent,
+    QDropEvent,
 )
 
 
@@ -36,7 +41,7 @@ MAX_ZOOM = 50.0
 
 
 class CoordOverlay:
-    """마우스 커서 옆에 좌표를 표시하는 오버레이."""
+    """마우스 커서 옆에 좌표를 표시하는 오버레이 (줌 무관 고정 크기)."""
 
     def __init__(self, scene: QGraphicsScene):
         self._bg = QGraphicsRectItem()
@@ -44,30 +49,54 @@ class CoordOverlay:
         self._bg.setPen(QPen(Qt.NoPen))
         self._bg.setZValue(1000)
         self._bg.setVisible(False)
+        self._bg.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIgnoresTransformations)
         scene.addItem(self._bg)
 
         self._text = QGraphicsTextItem()
         self._text.setDefaultTextColor(QColor(255, 255, 255))
-        self._text.setFont(QFont("Monospace", 10))
+        self._text.setFont(QFont("Monospace", 13))
         self._text.setZValue(1001)
         self._text.setVisible(False)
+        self._text.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
         scene.addItem(self._text)
 
     def update(self, scene_pos: QPointF, img_x: int, img_y: int):
         label = f"({img_x}, {img_y})"
         self._text.setPlainText(label)
 
-        offset_x, offset_y = 15, -10
-        self._text.setPos(scene_pos.x() + offset_x, scene_pos.y() + offset_y)
+        self._text.setPos(scene_pos)
+        self._bg.setPos(scene_pos)
 
         rect = self._text.boundingRect()
+        offset_x, offset_y = 18, -12
+        self._text.setTransformOriginPoint(0, 0)
+        self._bg.setTransformOriginPoint(0, 0)
+
+        # ItemIgnoresTransformations이므로 offset은 뷰포트 픽셀 단위
+        self._text.setPos(scene_pos)
+        self._bg.setPos(scene_pos)
+
         padding = 3
         self._bg.setRect(
-            scene_pos.x() + offset_x - padding,
-            scene_pos.y() + offset_y - padding,
+            offset_x - padding,
+            offset_y - padding,
             rect.width() + padding * 2,
             rect.height() + padding * 2,
         )
+        # text도 같은 offset
+        self._text.setPos(scene_pos)
+        self._bg.setPos(scene_pos)
+        # offset을 prepend transform으로 적용
+        from PySide6.QtGui import QTransform
+
+        t = QTransform()
+        t.translate(offset_x, offset_y)
+        self._text.setTransform(t)
+
+        t_bg = QTransform()
+        t_bg.translate(0, 0)
+        self._bg.setTransform(t_bg)
+
         self._bg.setVisible(True)
         self._text.setVisible(True)
 
@@ -80,48 +109,104 @@ class CoordOverlay:
         scene.removeItem(self._text)
 
 
+class Crosshair:
+    """마우스 위치에 표시되는 십자선 가이드."""
+
+    def __init__(self, scene: QGraphicsScene):
+        pen = QPen(QColor(255, 255, 255, 100), 0.5, Qt.PenStyle.DashLine)
+
+        self._h_line = QGraphicsLineItem()
+        self._h_line.setPen(pen)
+        self._h_line.setZValue(999)
+        self._h_line.setVisible(False)
+        scene.addItem(self._h_line)
+
+        self._v_line = QGraphicsLineItem()
+        self._v_line.setPen(pen)
+        self._v_line.setZValue(999)
+        self._v_line.setVisible(False)
+        scene.addItem(self._v_line)
+
+    def update(self, scene_pos: QPointF, img_w: int, img_h: int):
+        x, y = scene_pos.x(), scene_pos.y()
+        self._h_line.setLine(0, y, img_w, y)
+        self._v_line.setLine(x, 0, x, img_h)
+        self._h_line.setVisible(True)
+        self._v_line.setVisible(True)
+
+    def hide(self):
+        self._h_line.setVisible(False)
+        self._v_line.setVisible(False)
+
+    def remove(self, scene: QGraphicsScene):
+        scene.removeItem(self._h_line)
+        scene.removeItem(self._v_line)
+
+
 class PointMarker:
-    """이미지 위에 표시되는 포인트 마커 (원 + 좌표 텍스트)."""
+    """이미지 위에 표시되는 포인트 마커 (원 + 좌표 텍스트, 줌 무관 고정 크기)."""
 
     def __init__(self, scene: QGraphicsScene, img_x: int, img_y: int):
         self.img_x = img_x
         self.img_y = img_y
 
-        # 빨간 원
-        self._circle = QGraphicsEllipseItem(
-            img_x - POINT_RADIUS,
-            img_y - POINT_RADIUS,
-            POINT_RADIUS * 2,
-            POINT_RADIUS * 2,
-        )
+        # 빨간 원 — 줌 무관
+        r = POINT_RADIUS
+        self._circle = QGraphicsEllipseItem(-r, -r, r * 2, r * 2)
+        self._circle.setPos(img_x, img_y)
         self._circle.setPen(QPen(QColor(255, 50, 50), 1.5))
         self._circle.setBrush(QBrush(QColor(255, 50, 50, 200)))
         self._circle.setZValue(100)
+        self._circle.setFlag(
+            QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
         scene.addItem(self._circle)
 
-        # 좌표 라벨 배경
+        # 좌표 라벨 — 줌 무관
         label = f"({img_x}, {img_y})"
         self._label_text = QGraphicsTextItem()
         self._label_text.setPlainText(label)
         self._label_text.setDefaultTextColor(QColor(255, 255, 255))
-        self._label_text.setFont(QFont("Monospace", 8))
+        self._label_text.setFont(QFont("Monospace", 13))
         self._label_text.setZValue(102)
-        self._label_text.setPos(img_x + POINT_RADIUS + 4, img_y - 8)
+        self._label_text.setPos(img_x, img_y)
+        self._label_text.setFlag(
+            QGraphicsTextItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
         scene.addItem(self._label_text)
 
+        # 라벨 배경 — 줌 무관
         self._label_bg = QGraphicsRectItem()
         self._label_bg.setBrush(QBrush(QColor(200, 50, 50, 200)))
         self._label_bg.setPen(QPen(Qt.NoPen))
         self._label_bg.setZValue(101)
+        self._label_bg.setPos(img_x, img_y)
+        self._label_bg.setFlag(
+            QGraphicsRectItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
+        scene.addItem(self._label_bg)
+
+        # offset (뷰포트 픽셀 단위)
+        from PySide6.QtGui import QTransform
+
+        text_offset_x = POINT_RADIUS + 6
+        text_offset_y = -8
+
+        t = QTransform()
+        t.translate(text_offset_x, text_offset_y)
+        self._label_text.setTransform(t)
+
         rect = self._label_text.boundingRect()
         pad = 2
         self._label_bg.setRect(
-            img_x + POINT_RADIUS + 4 - pad,
-            img_y - 8 - pad,
+            -pad,
+            -pad,
             rect.width() + pad * 2,
             rect.height() + pad * 2,
         )
-        scene.addItem(self._label_bg)
+        t_bg = QTransform()
+        t_bg.translate(text_offset_x - pad, text_offset_y - pad)
+        self._label_bg.setTransform(t_bg)
 
     def remove(self, scene: QGraphicsScene):
         scene.removeItem(self._circle)
@@ -134,7 +219,9 @@ class ImageCanvas(QGraphicsView):
 
     coord_changed = Signal(int, int)  # (x, y) 이미지 좌표 변경 시그널
     point_added = Signal(int, int)    # 포인트 추가 시그널
+    point_undone = Signal()           # 포인트 하나 취소 시그널
     points_cleared = Signal()         # 포인트 전체 삭제 시그널
+    image_dropped = Signal(str)       # 드래그앤드롭 이미지 경로 시그널
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -151,10 +238,14 @@ class ImageCanvas(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setBackgroundBrush(QBrush(QColor(40, 40, 40)))
 
+        # 드래그 앤 드롭 활성화
+        self.setAcceptDrops(True)
+
         # 상태
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._markers: list[PointMarker] = []
         self._coord_overlay = CoordOverlay(self._scene)
+        self._crosshair = Crosshair(self._scene)
         self._current_zoom = 1.0
         self._has_image = False
         self._is_panning = False
@@ -188,9 +279,17 @@ class ImageCanvas(QGraphicsView):
         self._markers.clear()
         self.points_cleared.emit()
 
+    def undo_last_point(self):
+        """가장 최근 포인트 하나를 제거."""
+        if self._markers:
+            marker = self._markers.pop()
+            marker.remove(self._scene)
+            self.point_undone.emit()
+
     def clear_all(self):
         """이미지 + 포인트 모두 제거."""
         self._coord_overlay.hide()
+        self._crosshair.hide()
         for marker in self._markers:
             marker.remove(self._scene)
         self._markers.clear()
@@ -210,6 +309,30 @@ class ImageCanvas(QGraphicsView):
     def has_image(self) -> bool:
         return self._has_image
 
+    # ──────────────────── Drag & Drop ────────────────────
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent):
+        if event.mimeData().hasUrls():
+            url = event.mimeData().urls()[0]
+            path = url.toLocalFile()
+            if path:
+                self.image_dropped.emit(path)
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
     # ──────────────────── Mouse Events ────────────────────
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -226,6 +349,7 @@ class ImageCanvas(QGraphicsView):
 
         if not self._has_image:
             self._coord_overlay.hide()
+            self._crosshair.hide()
             return
 
         scene_pos = self.mapToScene(event.position().toPoint())
@@ -235,13 +359,20 @@ class ImageCanvas(QGraphicsView):
         pixmap = self._pixmap_item.pixmap()
         if 0 <= img_x < pixmap.width() and 0 <= img_y < pixmap.height():
             self._coord_overlay.update(scene_pos, img_x, img_y)
+            self._crosshair.update(scene_pos, pixmap.width(), pixmap.height())
             self.coord_changed.emit(img_x, img_y)
         else:
             self._coord_overlay.hide()
+            self._crosshair.hide()
 
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent):
+        # 우클릭 → 최근 포인트 취소
+        if event.button() == Qt.MouseButton.RightButton and self._has_image:
+            self.undo_last_point()
+            return
+
         # 중간 버튼(휠 클릭) 또는 Ctrl+좌클릭으로 패닝
         if event.button() == Qt.MouseButton.MiddleButton or (
             event.button() == Qt.MouseButton.LeftButton
@@ -300,4 +431,5 @@ class ImageCanvas(QGraphicsView):
 
     def leaveEvent(self, event):
         self._coord_overlay.hide()
+        self._crosshair.hide()
         super().leaveEvent(event)

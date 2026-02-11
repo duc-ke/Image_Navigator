@@ -19,14 +19,90 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QFileDialog,
     QLabel,
-    QWidget,
-    QVBoxLayout,
     QMessageBox,
+    QDialog,
+    QVBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence
 
 from canvas import ImageCanvas
+
+
+SHORTCUTS = [
+    ("Ctrl+O", "이미지 로드"),
+    ("Ctrl+R", "모든 포인트 리셋"),
+    ("Ctrl+Shift+R", "이미지 리셋"),
+    ("Ctrl+/", "단축키 가이드"),
+    ("좌클릭", "포인트 마킹"),
+    ("우클릭", "최근 포인트 취소 (Undo)"),
+    ("더블클릭", "원본 크기 복원 (Fit)"),
+    ("마우스 휠", "줌 인/아웃"),
+    ("휠 클릭 드래그", "패닝 (이동)"),
+    ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
+    ("드래그 앤 드롭", "이미지 파일 로드"),
+]
+
+
+class ShortcutDialog(QDialog):
+    """단축키 가이드 팝업."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Shortcut Guide")
+        self.setMinimumSize(420, 380)
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #353535;
+            }
+            QTableWidget {
+                background: #2b2b2b;
+                color: #ddd;
+                border: none;
+                gridline-color: #444;
+                font-size: 13px;
+            }
+            QTableWidget::item {
+                padding: 6px 12px;
+            }
+            QHeaderView::section {
+                background: #3c3c3c;
+                color: #aaa;
+                border: 1px solid #444;
+                padding: 6px 12px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        table = QTableWidget(len(SHORTCUTS), 2)
+        table.setHorizontalHeaderLabels(["Shortcut", "Action"])
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        for row, (key, desc) in enumerate(SHORTCUTS):
+            key_item = QTableWidgetItem(key)
+            key_item.setFont(QFont("Monospace", 13))
+            table.setItem(row, 0, key_item)
+            table.setItem(row, 1, QTableWidgetItem(desc))
+
+        layout.addWidget(table)
 
 
 class MainWindow(QMainWindow):
@@ -49,7 +125,9 @@ class MainWindow(QMainWindow):
         # 시그널 연결
         self._canvas.coord_changed.connect(self._on_coord_changed)
         self._canvas.point_added.connect(self._on_point_added)
+        self._canvas.point_undone.connect(self._update_point_count)
         self._canvas.points_cleared.connect(self._on_points_cleared)
+        self._canvas.image_dropped.connect(self._on_image_dropped)
 
         # 초기 이미지 로드
         if initial_image and os.path.isfile(initial_image):
@@ -93,8 +171,8 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Point Reset
-        point_reset_action = QAction("Point Reset", self)
+        # All Points Reset
+        point_reset_action = QAction("All Points Reset", self)
         point_reset_action.setShortcut(QKeySequence("Ctrl+R"))
         point_reset_action.triggered.connect(self._on_point_reset)
         toolbar.addAction(point_reset_action)
@@ -114,6 +192,19 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(self._point_count_label)
 
+        # 스페이서
+        spacer = QLabel()
+        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
+        from PySide6.QtWidgets import QSizePolicy
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+
+        # Shortcut Guide
+        shortcut_action = QAction("Shortcuts", self)
+        shortcut_action.setShortcut(QKeySequence("Ctrl+/"))
+        shortcut_action.triggered.connect(self._on_show_shortcuts)
+        toolbar.addAction(shortcut_action)
+
     def _setup_statusbar(self):
         status_bar = QStatusBar()
         status_bar.setStyleSheet(
@@ -128,7 +219,7 @@ class MainWindow(QMainWindow):
         )
         self.setStatusBar(status_bar)
 
-        self._coord_label = QLabel("Ready")
+        self._coord_label = QLabel("Ready — Load an image or drag & drop")
         self._coord_label.setFont(QFont("Monospace", 11))
         status_bar.addPermanentWidget(self._coord_label)
 
@@ -157,6 +248,17 @@ class MainWindow(QMainWindow):
         if file_path:
             self._load_image(file_path)
 
+    def _on_image_dropped(self, path: str):
+        """드래그 앤 드롭으로 이미지 로드."""
+        ext = os.path.splitext(path)[1].lower()
+        supported = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
+        if ext not in supported:
+            QMessageBox.warning(
+                self, "Error", f"지원하지 않는 파일 형식: {ext}\n{path}"
+            )
+            return
+        self._load_image(path)
+
     def _load_image(self, path: str):
         if self._canvas.load_image(path):
             filename = os.path.basename(path)
@@ -174,8 +276,12 @@ class MainWindow(QMainWindow):
         self._canvas.clear_all()
         self.setWindowTitle("Image Navigator")
         self._file_label.setText("")
-        self._coord_label.setText("Ready")
+        self._coord_label.setText("Ready — Load an image or drag & drop")
         self._update_point_count()
+
+    def _on_show_shortcuts(self):
+        dialog = ShortcutDialog(self)
+        dialog.show()
 
     # ──────────────────── Signals ────────────────────
 
