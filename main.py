@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QFont, QKeySequence
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
 
 from canvas import ImageCanvas, Mode
 
@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # Point 모드 토글 (checkable)
-        self._point_action = QAction("Point", self)
+        self._point_action = QAction("Point Mode", self)
         self._point_action.setCheckable(True)
         self._point_action.setShortcut(QKeySequence("P"))
         self._point_action.triggered.connect(self._on_toggle_mode)
