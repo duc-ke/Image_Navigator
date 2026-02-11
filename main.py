@@ -25,24 +25,25 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QSizePolicy,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QFont, QKeySequence
 
-from canvas import ImageCanvas
+from canvas import ImageCanvas, Mode
 
 
 SHORTCUTS = [
     ("Ctrl+O", "이미지 로드"),
+    ("P", "Hand / Point 모드 전환"),
     ("Ctrl+R", "모든 포인트 리셋"),
-    ("Ctrl+Shift+R", "이미지 리셋"),
+    ("Ctrl+Shift+R", "Fit View (원본 비율)"),
     ("Ctrl+/", "단축키 가이드"),
-    ("좌클릭", "포인트 마킹"),
+    ("좌클릭 (Hand)", "패닝 (이미지 이동)"),
+    ("좌클릭 (Point)", "포인트 마킹"),
     ("우클릭", "최근 포인트 취소 (Undo)"),
-    ("더블클릭", "원본 크기 복원 (Fit)"),
+    ("더블클릭 (Hand)", "Fit View (원본 비율)"),
     ("마우스 휠", "줌 인/아웃"),
-    ("휠 클릭 드래그", "패닝 (이동)"),
-    ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
     ("드래그 앤 드롭", "이미지 파일 로드"),
 ]
 
@@ -53,7 +54,7 @@ class ShortcutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Shortcut Guide")
-        self.setMinimumSize(420, 380)
+        self.setMinimumSize(420, 400)
         self.setStyleSheet(
             """
             QDialog {
@@ -105,6 +106,36 @@ class ShortcutDialog(QDialog):
         layout.addWidget(table)
 
 
+TOOLBAR_STYLE = """
+    QToolBar {
+        spacing: 8px;
+        padding: 4px;
+        background: #2b2b2b;
+        border-bottom: 1px solid #444;
+    }
+    QToolButton {
+        color: #ddd;
+        background: #3c3c3c;
+        border: 1px solid #555;
+        border-radius: 4px;
+        padding: 6px 14px;
+        font-size: 13px;
+    }
+    QToolButton:hover {
+        background: #4a4a4a;
+        border-color: #777;
+    }
+    QToolButton:pressed {
+        background: #555;
+    }
+    QToolButton:checked {
+        background: #c83232;
+        border-color: #e05050;
+        color: #fff;
+    }
+"""
+
+
 class MainWindow(QMainWindow):
     def __init__(self, initial_image: str | None = None):
         super().__init__()
@@ -128,6 +159,7 @@ class MainWindow(QMainWindow):
         self._canvas.point_undone.connect(self._update_point_count)
         self._canvas.points_cleared.connect(self._on_points_cleared)
         self._canvas.image_dropped.connect(self._on_image_dropped)
+        self._canvas.mode_changed.connect(self._on_mode_changed)
 
         # 초기 이미지 로드
         if initial_image and os.path.isfile(initial_image):
@@ -136,31 +168,7 @@ class MainWindow(QMainWindow):
     def _setup_toolbar(self):
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
-        toolbar.setStyleSheet(
-            """
-            QToolBar {
-                spacing: 8px;
-                padding: 4px;
-                background: #2b2b2b;
-                border-bottom: 1px solid #444;
-            }
-            QToolButton {
-                color: #ddd;
-                background: #3c3c3c;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 6px 14px;
-                font-size: 13px;
-            }
-            QToolButton:hover {
-                background: #4a4a4a;
-                border-color: #777;
-            }
-            QToolButton:pressed {
-                background: #555;
-            }
-            """
-        )
+        toolbar.setStyleSheet(TOOLBAR_STYLE)
         self.addToolBar(toolbar)
 
         # Load Image
@@ -171,17 +179,26 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        # Point 모드 토글 (checkable)
+        self._point_action = QAction("Point", self)
+        self._point_action.setCheckable(True)
+        self._point_action.setShortcut(QKeySequence("P"))
+        self._point_action.triggered.connect(self._on_toggle_mode)
+        toolbar.addAction(self._point_action)
+
+        toolbar.addSeparator()
+
         # All Points Reset
         point_reset_action = QAction("All Points Reset", self)
         point_reset_action.setShortcut(QKeySequence("Ctrl+R"))
         point_reset_action.triggered.connect(self._on_point_reset)
         toolbar.addAction(point_reset_action)
 
-        # Image Reset
-        img_reset_action = QAction("Image Reset", self)
-        img_reset_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        img_reset_action.triggered.connect(self._on_image_reset)
-        toolbar.addAction(img_reset_action)
+        # Fit View (기존 Image Reset → 이미지 비율 원본으로 리셋)
+        fit_action = QAction("Fit View", self)
+        fit_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        fit_action.triggered.connect(self._on_fit_view)
+        toolbar.addAction(fit_action)
 
         toolbar.addSeparator()
 
@@ -192,10 +209,15 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(self._point_count_label)
 
+        # 모드 표시 라벨
+        self._mode_label = QLabel("  Hand  ")
+        self._mode_label.setStyleSheet(
+            "color: #8cf; font-size: 13px; font-weight: bold; padding: 0 8px;"
+        )
+        toolbar.addWidget(self._mode_label)
+
         # 스페이서
         spacer = QLabel()
-        spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy(), spacer.sizePolicy().verticalPolicy())
-        from PySide6.QtWidgets import QSizePolicy
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
@@ -268,16 +290,15 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Error", f"이미지를 로드할 수 없습니다:\n{path}")
 
+    def _on_toggle_mode(self):
+        self._canvas.toggle_mode()
+
     def _on_point_reset(self):
         self._canvas.clear_points()
         self._update_point_count()
 
-    def _on_image_reset(self):
-        self._canvas.clear_all()
-        self.setWindowTitle("Image Navigator")
-        self._file_label.setText("")
-        self._coord_label.setText("Ready — Load an image or drag & drop")
-        self._update_point_count()
+    def _on_fit_view(self):
+        self._canvas.fit_view()
 
     def _on_show_shortcuts(self):
         dialog = ShortcutDialog(self)
@@ -293,6 +314,20 @@ class MainWindow(QMainWindow):
 
     def _on_points_cleared(self):
         self._update_point_count()
+
+    def _on_mode_changed(self, mode_str: str):
+        if mode_str == "hand":
+            self._mode_label.setText("  Hand  ")
+            self._mode_label.setStyleSheet(
+                "color: #8cf; font-size: 13px; font-weight: bold; padding: 0 8px;"
+            )
+            self._point_action.setChecked(False)
+        else:
+            self._mode_label.setText("  Point  ")
+            self._mode_label.setStyleSheet(
+                "color: #f66; font-size: 13px; font-weight: bold; padding: 0 8px;"
+            )
+            self._point_action.setChecked(True)
 
     def _update_point_count(self):
         count = len(self._canvas.get_points())

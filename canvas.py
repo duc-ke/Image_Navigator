@@ -3,13 +3,17 @@ ImageCanvas - QGraphicsView 기반 이미지 캔버스 위젯.
 
 기능:
 - 이미지 로드 및 표시 (파일 선택 / 드래그 앤 드롭)
+- 빈 화면에 안내 문구 표시
+- Hand 모드 / Point 모드 전환
 - 실시간 마우스 좌표 표시 (커서 옆 오버레이)
 - 십자선 가이드
 - 클릭으로 포인트 마킹 (빨간 점 + 좌표 텍스트)
 - 우클릭으로 최근 포인트 하나씩 취소
 - 마우스 휠 줌 인/아웃
-- 더블클릭 원본 크기 복원
+- 더블클릭 원본 크기 복원 (Hand 모드에서만)
 """
+
+from enum import Enum
 
 from PySide6.QtWidgets import (
     QGraphicsView,
@@ -31,6 +35,9 @@ from PySide6.QtGui import (
     QMouseEvent,
     QDragEnterEvent,
     QDropEvent,
+    QPainter,
+    QCursor,
+    QTransform,
 )
 
 
@@ -38,6 +45,27 @@ POINT_RADIUS = 4
 ZOOM_FACTOR = 1.15
 MIN_ZOOM = 0.05
 MAX_ZOOM = 50.0
+
+
+class Mode(Enum):
+    HAND = "hand"
+    POINT = "point"
+
+
+def _make_point_cursor() -> QCursor:
+    """빨간 점 모양의 커스텀 커서 생성."""
+    size = 20
+    pm = QPixmap(size, size)
+    pm.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor(255, 50, 50), 2))
+    painter.setBrush(QBrush(QColor(255, 50, 50, 180)))
+    r = 5
+    center = size // 2
+    painter.drawEllipse(center - r, center - r, r * 2, r * 2)
+    painter.end()
+    return QCursor(pm, center, center)
 
 
 class CoordOverlay:
@@ -69,12 +97,6 @@ class CoordOverlay:
 
         rect = self._text.boundingRect()
         offset_x, offset_y = 18, -12
-        self._text.setTransformOriginPoint(0, 0)
-        self._bg.setTransformOriginPoint(0, 0)
-
-        # ItemIgnoresTransformations이므로 offset은 뷰포트 픽셀 단위
-        self._text.setPos(scene_pos)
-        self._bg.setPos(scene_pos)
 
         padding = 3
         self._bg.setRect(
@@ -83,18 +105,12 @@ class CoordOverlay:
             rect.width() + padding * 2,
             rect.height() + padding * 2,
         )
-        # text도 같은 offset
-        self._text.setPos(scene_pos)
-        self._bg.setPos(scene_pos)
-        # offset을 prepend transform으로 적용
-        from PySide6.QtGui import QTransform
 
         t = QTransform()
         t.translate(offset_x, offset_y)
         self._text.setTransform(t)
 
         t_bg = QTransform()
-        t_bg.translate(0, 0)
         self._bg.setTransform(t_bg)
 
         self._bg.setVisible(True)
@@ -187,8 +203,6 @@ class PointMarker:
         scene.addItem(self._label_bg)
 
         # offset (뷰포트 픽셀 단위)
-        from PySide6.QtGui import QTransform
-
         text_offset_x = POINT_RADIUS + 6
         text_offset_y = -8
 
@@ -222,6 +236,7 @@ class ImageCanvas(QGraphicsView):
     point_undone = Signal()           # 포인트 하나 취소 시그널
     points_cleared = Signal()         # 포인트 전체 삭제 시그널
     image_dropped = Signal(str)       # 드래그앤드롭 이미지 경로 시그널
+    mode_changed = Signal(str)        # 모드 변경 시그널 ("hand" / "point")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -251,6 +266,56 @@ class ImageCanvas(QGraphicsView):
         self._is_panning = False
         self._pan_start = QPointF()
 
+        # 모드
+        self._mode = Mode.HAND
+        self._point_cursor = _make_point_cursor()
+
+        # 빈 화면 안내 텍스트
+        self._placeholder = QGraphicsTextItem()
+        self._placeholder.setPlainText("Drop image here\nor click Load Image")
+        self._placeholder.setDefaultTextColor(QColor(255, 255, 255, 60))
+        self._placeholder.setFont(QFont("Sans", 28))
+        self._placeholder.setZValue(0)
+        self._placeholder.setFlag(
+            QGraphicsTextItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
+        self._scene.addItem(self._placeholder)
+        self._center_placeholder()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._has_image:
+            self._center_placeholder()
+
+    def _center_placeholder(self):
+        rect = self._placeholder.boundingRect()
+        vp = self.viewport().rect()
+        scene_center = self.mapToScene(vp.center())
+        self._placeholder.setPos(
+            scene_center.x() - rect.width() / 2,
+            scene_center.y() - rect.height() / 2,
+        )
+
+    # ──────────────────── Mode ────────────────────
+
+    @property
+    def mode(self) -> Mode:
+        return self._mode
+
+    def set_mode(self, mode: Mode):
+        self._mode = mode
+        if mode == Mode.HAND:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(self._point_cursor)
+        self.mode_changed.emit(mode.value)
+
+    def toggle_mode(self):
+        if self._mode == Mode.HAND:
+            self.set_mode(Mode.POINT)
+        else:
+            self.set_mode(Mode.HAND)
+
     # ──────────────────── Public API ────────────────────
 
     def load_image(self, path: str) -> bool:
@@ -266,11 +331,20 @@ class ImageCanvas(QGraphicsView):
         self._scene.addItem(self._pixmap_item)
         self._scene.setSceneRect(self._pixmap_item.boundingRect())
 
+        self._placeholder.setVisible(False)
+
         self._has_image = True
         self._current_zoom = 1.0
         self.resetTransform()
         self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
         return True
+
+    def fit_view(self):
+        """이미지를 뷰에 맞게 리셋 (원본 비율 Fit)."""
+        if self._has_image and self._pixmap_item:
+            self._current_zoom = 1.0
+            self.resetTransform()
+            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
     def clear_points(self):
         """모든 포인트 마커를 제거."""
@@ -301,6 +375,9 @@ class ImageCanvas(QGraphicsView):
         self._has_image = False
         self._current_zoom = 1.0
         self.resetTransform()
+
+        self._placeholder.setVisible(True)
+        self._center_placeholder()
 
     def get_points(self) -> list[tuple[int, int]]:
         """저장된 포인트 좌표 리스트 반환."""
@@ -368,51 +445,58 @@ class ImageCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent):
-        # 우클릭 → 최근 포인트 취소
-        if event.button() == Qt.MouseButton.RightButton and self._has_image:
+        if not self._has_image:
+            super().mousePressEvent(event)
+            return
+
+        # 우클릭 → 최근 포인트 취소 (양쪽 모드 공통)
+        if event.button() == Qt.MouseButton.RightButton:
             self.undo_last_point()
             return
 
-        # 중간 버튼(휠 클릭) 또는 Ctrl+좌클릭으로 패닝
-        if event.button() == Qt.MouseButton.MiddleButton or (
-            event.button() == Qt.MouseButton.LeftButton
-            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
-        ):
+        # ── Point 모드 ──
+        if self._mode == Mode.POINT:
+            if event.button() == Qt.MouseButton.LeftButton:
+                scene_pos = self.mapToScene(event.position().toPoint())
+                img_x = int(scene_pos.x())
+                img_y = int(scene_pos.y())
+                pixmap = self._pixmap_item.pixmap()
+                if 0 <= img_x < pixmap.width() and 0 <= img_y < pixmap.height():
+                    marker = PointMarker(self._scene, img_x, img_y)
+                    self._markers.append(marker)
+                    self.point_added.emit(img_x, img_y)
+                return
+            super().mousePressEvent(event)
+            return
+
+        # ── Hand 모드 ──
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
             self._is_panning = True
             self._pan_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
-
-        if event.button() != Qt.MouseButton.LeftButton or not self._has_image:
-            super().mousePressEvent(event)
-            return
-
-        scene_pos = self.mapToScene(event.position().toPoint())
-        img_x = int(scene_pos.x())
-        img_y = int(scene_pos.y())
-
-        pixmap = self._pixmap_item.pixmap()
-        if 0 <= img_x < pixmap.width() and 0 <= img_y < pixmap.height():
-            marker = PointMarker(self._scene, img_x, img_y)
-            self._markers.append(marker)
-            self.point_added.emit(img_x, img_y)
 
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if self._is_panning:
             self._is_panning = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            if self._mode == Mode.HAND:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            else:
+                self.setCursor(self._point_cursor)
             return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        """더블클릭 시 원본 크기(fit in view)로 복원."""
-        if self._has_image and event.button() == Qt.MouseButton.LeftButton:
-            self._current_zoom = 1.0
-            self.resetTransform()
-            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
-        super().mouseDoubleClickEvent(event)
+        """더블클릭 시 Fit View — Hand 모드에서만."""
+        if (
+            self._has_image
+            and self._mode == Mode.HAND
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self.fit_view()
+        # Point 모드에서는 이벤트를 소비하여 추가 포인트 방지
 
     def wheelEvent(self, event: QWheelEvent):
         """마우스 휠로 줌 인/아웃."""
