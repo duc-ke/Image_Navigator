@@ -37,18 +37,23 @@ from canvas import ImageCanvas, Mode
 SHORTCUTS = [
     ("__section__", "General"),
     ("Ctrl+O", "이미지 로드"),
-    ("P", "Hand / Point 모드 전환"),
-    ("Ctrl+R", "모든 포인트 리셋"),
+    ("P", "Hand / Point / Box 모드 순환"),
+    ("Ctrl+R", "모든 마커 리셋"),
     ("Ctrl+/", "단축키 가이드"),
     ("F", "Fit View (원본 비율)"),
     ("마우스 휠", "줌 인/아웃"),
-    ("우클릭", "최근 포인트 취소 (Undo)"),
+    ("우클릭", "박스 취소 또는 최근 마커 삭제"),
     ("드래그 앤 드롭", "이미지 파일 로드"),
     ("__section__", "Hand Mode"),
     ("좌클릭 드래그", "패닝 (이미지 이동)"),
     ("더블클릭", "Fit View (원본 비율)"),
     ("__section__", "Point Mode"),
     ("좌클릭", "포인트 마킹"),
+    ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
+    ("__section__", "Box Mode"),
+    ("좌클릭 (1번)", "박스 시작점 설정"),
+    ("좌클릭 (2번)", "박스 완성"),
+    ("우클릭", "박스 취소 또는 최근 마커 삭제"),
     ("Ctrl+좌클릭 드래그", "패닝 (이동)"),
 ]
 
@@ -155,6 +160,16 @@ TOOLBAR_STYLE = """
         border-color: #e05050;
         color: #fff;
     }
+    QToolButton#mode_button_point:checked {
+        background: #c83232;
+        border-color: #e05050;
+        color: #fff;
+    }
+    QToolButton#mode_button_box:checked {
+        background: #32c832;
+        border-color: #50e050;
+        color: #fff;
+    }
 """
 
 
@@ -202,13 +217,18 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Point 모드 토글 (checkable)
-        self._point_action = QAction("Point Mode", self)
+        # 모드 사이클 토글 (checkable)
+        self._point_action = QAction("Cycle Mode", self)
         self._point_action.setCheckable(True)
         self._point_action.setShortcut(QKeySequence("P"))
-        self._point_action.setToolTip("Hand / Point 모드 전환 (P)")
+        self._point_action.setToolTip("Hand / Point / Box 모드 전환 (P)")
         self._point_action.triggered.connect(self._on_toggle_mode)
         toolbar.addAction(self._point_action)
+
+        # 버튼에 ObjectName 설정하여 스타일 적용
+        mode_button = toolbar.widgetForAction(self._point_action)
+        if mode_button:
+            mode_button.setObjectName("mode_button_point")
 
         toolbar.addSeparator()
 
@@ -343,22 +363,38 @@ class MainWindow(QMainWindow):
         self._update_point_count()
 
     def _on_mode_changed(self, mode_str: str):
+        mode_button = self.findChild(QToolBar).widgetForAction(self._point_action)
+
         if mode_str == "hand":
-            self._mode_label.setText("  Hand  ")
+            self._mode_label.setText("  Now Mode: Hand  ")
             self._mode_label.setStyleSheet(
                 "color: #8cf; font-size: 13px; font-weight: bold; padding: 0 8px;"
             )
             self._point_action.setChecked(False)
-        else:
-            self._mode_label.setText("  Point  ")
+        elif mode_str == "point":
+            self._mode_label.setText("  Now Mode: Point  ")
             self._mode_label.setStyleSheet(
                 "color: #f66; font-size: 13px; font-weight: bold; padding: 0 8px;"
             )
             self._point_action.setChecked(True)
+            if mode_button:
+                mode_button.setObjectName("mode_button_point")
+                mode_button.setStyleSheet("")  # Reset to trigger re-evaluation
+        else:  # mode_str == "box"
+            self._mode_label.setText("  Now Mode: Box  ")
+            self._mode_label.setStyleSheet(
+                "color: #5f5; font-size: 13px; font-weight: bold; padding: 0 8px;"
+            )
+            self._point_action.setChecked(True)
+            if mode_button:
+                mode_button.setObjectName("mode_button_box")
+                mode_button.setStyleSheet("")  # Reset to trigger re-evaluation
 
     def _update_point_count(self):
-        count = len(self._canvas.get_points())
-        self._point_count_label.setText(f"  Points: {count}  ")
+        point_count = len(self._canvas.get_points())
+        box_count = len(self._canvas.get_boxes())
+        total = point_count + box_count
+        self._point_count_label.setText(f"  Markers: {total} (P:{point_count} B:{box_count})  ")
 
 
 def main():

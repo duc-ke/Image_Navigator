@@ -50,6 +50,7 @@ MAX_ZOOM = 50.0
 class Mode(Enum):
     HAND = "hand"
     POINT = "point"
+    BOX = "box"
 
 
 def _make_point_cursor() -> QCursor:
@@ -75,12 +76,35 @@ def _make_point_cursor() -> QCursor:
     return QCursor(pm, center, center)
 
 
+def _make_box_cursor() -> QCursor:
+    """초록색 십자선 커서 생성 (Box 모드용)."""
+    size = 24
+    pm = QPixmap(size, size)
+    pm.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(50, 255, 50, 200), 1.2)
+    painter.setPen(pen)
+    center = size // 2
+    arm = 8
+    # 십자선
+    painter.drawLine(center - arm, center, center - 2, center)
+    painter.drawLine(center + 2, center, center + arm, center)
+    painter.drawLine(center, center - arm, center, center - 2)
+    painter.drawLine(center, center + 2, center, center + arm)
+    # 중심 점
+    painter.setPen(QPen(QColor(50, 255, 50, 220), 1.5))
+    painter.drawPoint(center, center)
+    painter.end()
+    return QCursor(pm, center, center)
+
+
 class CoordOverlay:
     """마우스 커서 옆에 좌표를 표시하는 오버레이 (줌 무관 고정 크기)."""
 
     def __init__(self, scene: QGraphicsScene):
         self._bg = QGraphicsRectItem()
-        self._bg.setBrush(QBrush(QColor(0, 0, 0, 180)))
+        self._bg.setBrush(QBrush(QColor(0, 0, 0, 80)))
         self._bg.setPen(QPen(Qt.NoPen))
         self._bg.setZValue(1000)
         self._bg.setVisible(False)
@@ -103,7 +127,7 @@ class CoordOverlay:
         self._bg.setPos(scene_pos)
 
         rect = self._text.boundingRect()
-        offset_x, offset_y = 18, -12
+        offset_x, offset_y = 20, -40
 
         padding = 3
         self._bg.setRect(
@@ -136,7 +160,7 @@ class Crosshair:
     """마우스 위치에 표시되는 십자선 가이드."""
 
     def __init__(self, scene: QGraphicsScene):
-        pen = QPen(QColor(255, 255, 255, 100), 0.5, Qt.PenStyle.DashLine)
+        pen = QPen(QColor(255, 255, 255, 100), 3.5, Qt.PenStyle.DashLine)
 
         self._h_line = QGraphicsLineItem()
         self._h_line.setPen(pen)
@@ -200,7 +224,7 @@ class PointMarker:
 
         # 라벨 배경 — 줌 무관
         self._label_bg = QGraphicsRectItem()
-        self._label_bg.setBrush(QBrush(QColor(200, 50, 50, 200)))
+        self._label_bg.setBrush(QBrush(QColor(200, 50, 50, 80)))
         self._label_bg.setPen(QPen(Qt.NoPen))
         self._label_bg.setZValue(101)
         self._label_bg.setPos(img_x, img_y)
@@ -231,6 +255,82 @@ class PointMarker:
 
     def remove(self, scene: QGraphicsScene):
         scene.removeItem(self._circle)
+        scene.removeItem(self._label_text)
+        scene.removeItem(self._label_bg)
+
+
+class BoxMarker:
+    """Bounding box marker (green border + coordinate labels)."""
+
+    def __init__(self, scene: QGraphicsScene, x1: int, y1: int, x2: int, y2: int):
+        # Normalize coordinates (top-left to bottom-right)
+        self.x1 = min(x1, x2)
+        self.y1 = min(y1, y2)
+        self.x2 = max(x1, x2)
+        self.y2 = max(y1, y2)
+        self.width = abs(x2 - x1)
+        self.height = abs(y2 - y1)
+
+        # Green rectangle (3.5px border, transparent fill)
+        # Box follows image zoom - NO ItemIgnoresTransformations
+        self._rect = QGraphicsRectItem(self.x1, self.y1, self.width, self.height)
+        self._rect.setPen(QPen(QColor(50, 255, 50), 3.5))
+        self._rect.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._rect.setZValue(100)
+        scene.addItem(self._rect)
+
+        # Coordinate label - show all 4 corners + W, H with labels
+        label = (
+            f"Xmin,Ymin: ({self.x1},{self.y1})\n"
+            f"Xmax,Ymin: ({self.x2},{self.y1})\n"
+            f"Xmin,Ymax: ({self.x1},{self.y2})\n"
+            f"Xmax,Ymax: ({self.x2},{self.y2})\n"
+            f"W:{self.width} H:{self.height}"
+        )
+        self._label_text = QGraphicsTextItem()
+        self._label_text.setPlainText(label)
+        self._label_text.setDefaultTextColor(QColor(255, 255, 255))
+        self._label_text.setFont(QFont("Monospace", 11))
+        self._label_text.setZValue(102)
+        self._label_text.setPos(self.x1, self.y1)
+        self._label_text.setFlag(
+            QGraphicsTextItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
+        scene.addItem(self._label_text)
+
+        # Label background (green) - more transparent
+        self._label_bg = QGraphicsRectItem()
+        self._label_bg.setBrush(QBrush(QColor(50, 200, 50, 80)))
+        self._label_bg.setPen(QPen(Qt.NoPen))
+        self._label_bg.setZValue(101)
+        self._label_bg.setPos(self.x1, self.y1)
+        self._label_bg.setFlag(
+            QGraphicsRectItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
+        scene.addItem(self._label_bg)
+
+        # Position label with offset (viewport pixels) - above box top-left corner
+        text_offset_x = 6
+        text_offset_y = -80
+
+        t = QTransform()
+        t.translate(text_offset_x, text_offset_y)
+        self._label_text.setTransform(t)
+
+        rect = self._label_text.boundingRect()
+        pad = 2
+        self._label_bg.setRect(
+            -pad,
+            -pad,
+            rect.width() + pad * 2,
+            rect.height() + pad * 2,
+        )
+        t_bg = QTransform()
+        t_bg.translate(text_offset_x - pad, text_offset_y - pad)
+        self._label_bg.setTransform(t_bg)
+
+    def remove(self, scene: QGraphicsScene):
+        scene.removeItem(self._rect)
         scene.removeItem(self._label_text)
         scene.removeItem(self._label_bg)
 
@@ -276,6 +376,16 @@ class ImageCanvas(QGraphicsView):
         # 모드
         self._mode = Mode.HAND
         self._point_cursor = _make_point_cursor()
+        self._box_cursor = _make_box_cursor()
+
+        # Box 모드 상태
+        self._box_start: QPointF | None = None
+        self._box_temp_point: QGraphicsEllipseItem | None = None
+        self._box_preview: QGraphicsRectItem | None = None
+        self._box_markers: list[BoxMarker] = []
+
+        # 통합 Undo를 위한 히스토리
+        self._marker_history: list[PointMarker | BoxMarker] = []
 
         # 빈 화면 안내 텍스트
         self._placeholder = QGraphicsTextItem()
@@ -310,18 +420,71 @@ class ImageCanvas(QGraphicsView):
         return self._mode
 
     def set_mode(self, mode: Mode):
+        # Cleanup box state when leaving BOX mode
+        if self._mode == Mode.BOX:
+            self._cleanup_box_state()
+
         self._mode = mode
         if mode == Mode.HAND:
             self.setCursor(Qt.CursorShape.ArrowCursor)
-        else:
+        elif mode == Mode.POINT:
             self.setCursor(self._point_cursor)
+        else:  # Mode.BOX
+            self.setCursor(self._box_cursor)
         self.mode_changed.emit(mode.value)
 
     def toggle_mode(self):
         if self._mode == Mode.HAND:
             self.set_mode(Mode.POINT)
-        else:
+        elif self._mode == Mode.POINT:
+            self.set_mode(Mode.BOX)
+        else:  # Mode.BOX
             self.set_mode(Mode.HAND)
+
+    # ──────────────────── Box Mode Helpers ────────────────────
+
+    def _create_temp_point(self, x: int, y: int):
+        """Create green temporary point for box start."""
+        r = POINT_RADIUS
+        self._box_temp_point = QGraphicsEllipseItem(-r, -r, r * 2, r * 2)
+        self._box_temp_point.setPos(x, y)
+        self._box_temp_point.setPen(QPen(QColor(50, 255, 50), 1.5))
+        self._box_temp_point.setBrush(QBrush(QColor(50, 255, 50, 200)))
+        self._box_temp_point.setZValue(99)
+        self._box_temp_point.setFlag(
+            QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations
+        )
+        self._scene.addItem(self._box_temp_point)
+
+    def _create_box_preview(self):
+        """Create preview rectangle for box mode."""
+        self._box_preview = QGraphicsRectItem()
+        self._box_preview.setPen(QPen(QColor(50, 255, 50, 150), 3.5))
+        self._box_preview.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._box_preview.setZValue(99)
+        # No ItemIgnoresTransformations - box follows image zoom
+        self._scene.addItem(self._box_preview)
+
+    def _update_box_preview(self, start: QPointF, current: QPointF):
+        """Update preview box from start to current position."""
+        x1, y1 = int(start.x()), int(start.y())
+        x2, y2 = int(current.x()), int(current.y())
+        left = min(x1, x2)
+        top = min(y1, y2)
+        width = abs(x2 - x1)
+        height = abs(y2 - y1)
+        # Use scene coordinates directly
+        self._box_preview.setRect(left, top, width, height)
+        self._box_preview.setVisible(True)
+
+    def _cleanup_box_state(self):
+        """Clear box mode temporary state."""
+        self._box_start = None
+        if self._box_temp_point:
+            self._scene.removeItem(self._box_temp_point)
+            self._box_temp_point = None
+        if self._box_preview:
+            self._box_preview.setVisible(False)
 
     # ──────────────────── Public API ────────────────────
 
@@ -354,18 +517,32 @@ class ImageCanvas(QGraphicsView):
             self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
     def clear_points(self):
-        """모든 포인트 마커를 제거."""
+        """Clear all markers (points and boxes)."""
         for marker in self._markers:
             marker.remove(self._scene)
         self._markers.clear()
+
+        for marker in self._box_markers:
+            marker.remove(self._scene)
+        self._box_markers.clear()
+
+        self._marker_history.clear()
         self.points_cleared.emit()
 
-    def undo_last_point(self):
-        """가장 최근 포인트 하나를 제거."""
-        if self._markers:
-            marker = self._markers.pop()
-            marker.remove(self._scene)
-            self.point_undone.emit()
+    def undo_last_marker(self):
+        """Remove most recent marker (Point or Box)."""
+        if not self._marker_history:
+            return
+
+        marker = self._marker_history.pop()
+
+        if isinstance(marker, PointMarker):
+            self._markers.remove(marker)
+        elif isinstance(marker, BoxMarker):
+            self._box_markers.remove(marker)
+
+        marker.remove(self._scene)
+        self.point_undone.emit()
 
     def clear_all(self):
         """이미지 + 포인트 모두 제거."""
@@ -374,6 +551,13 @@ class ImageCanvas(QGraphicsView):
         for marker in self._markers:
             marker.remove(self._scene)
         self._markers.clear()
+
+        for marker in self._box_markers:
+            marker.remove(self._scene)
+        self._box_markers.clear()
+
+        self._marker_history.clear()
+        self._cleanup_box_state()
 
         if self._pixmap_item is not None:
             self._scene.removeItem(self._pixmap_item)
@@ -389,6 +573,10 @@ class ImageCanvas(QGraphicsView):
     def get_points(self) -> list[tuple[int, int]]:
         """저장된 포인트 좌표 리스트 반환."""
         return [(m.img_x, m.img_y) for m in self._markers]
+
+    def get_boxes(self) -> list[tuple[int, int, int, int]]:
+        """Return box coordinates as (x1, y1, x2, y2) list."""
+        return [(b.x1, b.y1, b.x2, b.y2) for b in self._box_markers]
 
     def has_image(self) -> bool:
         return self._has_image
@@ -445,6 +633,10 @@ class ImageCanvas(QGraphicsView):
             self._coord_overlay.update(scene_pos, img_x, img_y)
             self._crosshair.update(scene_pos, pixmap.width(), pixmap.height())
             self.coord_changed.emit(img_x, img_y)
+
+            # Box mode: update preview if first click done
+            if self._mode == Mode.BOX and self._box_start is not None:
+                self._update_box_preview(self._box_start, scene_pos)
         else:
             self._coord_overlay.hide()
             self._crosshair.hide()
@@ -456,9 +648,14 @@ class ImageCanvas(QGraphicsView):
             super().mousePressEvent(event)
             return
 
-        # 우클릭 → 최근 포인트 취소 (양쪽 모드 공통)
+        # 우클릭 → Box 취소 또는 마커 삭제
         if event.button() == Qt.MouseButton.RightButton:
-            self.undo_last_point()
+            # Box mode: cancel in-progress box
+            if self._mode == Mode.BOX and self._box_start is not None:
+                self._cleanup_box_state()
+            else:
+                # Undo last marker (Point or Box)
+                self.undo_last_marker()
             return
 
         # Ctrl+좌클릭 또는 중간 버튼 → 패닝 (양쪽 모드 공통)
@@ -481,7 +678,40 @@ class ImageCanvas(QGraphicsView):
                 if 0 <= img_x < pixmap.width() and 0 <= img_y < pixmap.height():
                     marker = PointMarker(self._scene, img_x, img_y)
                     self._markers.append(marker)
+                    self._marker_history.append(marker)
                     self.point_added.emit(img_x, img_y)
+                return
+            super().mousePressEvent(event)
+            return
+
+        # ── Box 모드 ──
+        if self._mode == Mode.BOX:
+            if event.button() == Qt.MouseButton.LeftButton:
+                scene_pos = self.mapToScene(event.position().toPoint())
+                img_x = int(scene_pos.x())
+                img_y = int(scene_pos.y())
+                pixmap = self._pixmap_item.pixmap()
+
+                if not (0 <= img_x < pixmap.width() and 0 <= img_y < pixmap.height()):
+                    return
+
+                if self._box_start is None:
+                    # First click: start box
+                    self._box_start = QPointF(img_x, img_y)
+                    self._create_temp_point(img_x, img_y)
+                    self._create_box_preview()
+                else:
+                    # Second click: complete box
+                    x1 = int(self._box_start.x())
+                    y1 = int(self._box_start.y())
+
+                    if img_x != x1 or img_y != y1:
+                        marker = BoxMarker(self._scene, x1, y1, img_x, img_y)
+                        self._box_markers.append(marker)
+                        self._marker_history.append(marker)
+                        self.point_added.emit(x1, y1)
+
+                    self._cleanup_box_state()
                 return
             super().mousePressEvent(event)
             return
@@ -500,8 +730,10 @@ class ImageCanvas(QGraphicsView):
             self._is_panning = False
             if self._mode == Mode.HAND:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
-            else:
+            elif self._mode == Mode.POINT:
                 self.setCursor(self._point_cursor)
+            else:  # Mode.BOX
+                self.setCursor(self._box_cursor)
             return
         super().mouseReleaseEvent(event)
 
